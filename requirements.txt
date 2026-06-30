@@ -4,6 +4,7 @@ python-multipart
 pymupdf
 langchain
 langchain-community
+langchain-groq
 python-dotenv
 langchain-core
 sentence-transformers
