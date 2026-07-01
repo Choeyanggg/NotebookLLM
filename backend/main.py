@@ -53,7 +53,6 @@ async def ask(request: QueryRequest):
         question=request.question,
         top_k=5,
         min_score=0.1,
-        stream=True,
         summarize=True
     )
 
