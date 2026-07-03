@@ -18,9 +18,27 @@ import {
   Info,
   Sun,
   Moon,
-  NotebookPen
+  NotebookPen,
+  History,
+  MessageSquarePlus
 } from 'lucide-react';
 import { Source, Message, Citation } from './types';
+
+function getOrCreateVisitorId(): string {
+  let id = localStorage.getItem('rag_visitor_id');
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem('rag_visitor_id', id);
+  }
+  return id;
+}
+
+interface SessionSummary {
+  id: string;
+  title: string | null;
+  created_at: string;
+  message_count: number;
+}
 
 export default function App() {
   const [sources, setSources] = useState<Source[]>([]);
@@ -33,6 +51,15 @@ export default function App() {
     if (stored) return stored === 'dark';
     return window.matchMedia('(prefers-color-scheme: dark)').matches;
   });
+
+  // ---- Visitor / session identity for chat history ----
+  const [visitorId] = useState<string>(() => getOrCreateVisitorId());
+  const [sessionId, setSessionId] = useState<string | null>(() => {
+    return localStorage.getItem('rag_session_id');
+  });
+  const [sessions, setSessions] = useState<SessionSummary[]>([]);
+  const [showHistoryPanel, setShowHistoryPanel] = useState(false);
+  const [isHydrating, setIsHydrating] = useState(false);
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDarkMode);
@@ -71,6 +98,87 @@ export default function App() {
   useEffect(() => {
     scrollToBottom();
   }, [messages, isGeneratingChat]);
+
+  // ---- Session history: load list for sidebar/dropdown ----
+  const loadSessions = async () => {
+    try {
+      const res = await fetch(`/api/sessions?visitor_id=${visitorId}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      setSessions(data);
+    } catch (err) {
+      console.error('Failed to load sessions', err);
+    }
+  };
+
+  useEffect(() => {
+    loadSessions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ---- Hydrate current session's messages on page load/refresh ----
+  useEffect(() => {
+    if (!sessionId) return;
+
+    const hydrate = async () => {
+      setIsHydrating(true);
+      try {
+        const res = await fetch(`/api/sessions/${sessionId}/messages`);
+        if (!res.ok) return;
+        const data = await res.json();
+
+        const hydrated: Message[] = data.map((m: any, i: number) => ({
+          id: `msg-hydrated-${i}`,
+          role: m.role === 'user' ? 'user' : 'model',
+          content: m.content,
+          timestamp: new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        }));
+
+        setMessages(hydrated);
+      } catch (err) {
+        console.error('Failed to hydrate session', err);
+      } finally {
+        setIsHydrating(false);
+      }
+    };
+
+    hydrate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // run once on mount only — subsequent session switches are handled by resumeSession directly
+
+  // ---- Resume a past session from the history panel ----
+  const resumeSession = async (id: string) => {
+    setIsHydrating(true);
+    try {
+      const res = await fetch(`/api/sessions/${id}/messages`);
+      if (!res.ok) return;
+      const data = await res.json();
+
+      const hydrated: Message[] = data.map((m: any, i: number) => ({
+        id: `msg-${id}-${i}`,
+        role: m.role === 'user' ? 'user' : 'model',
+        content: m.content,
+        timestamp: new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }));
+
+      setMessages(hydrated);
+      setSessionId(id);
+      localStorage.setItem('rag_session_id', id);
+      setShowHistoryPanel(false);
+    } catch (err) {
+      console.error('Failed to resume session', err);
+    } finally {
+      setIsHydrating(false);
+    }
+  };
+
+  // ---- Start a brand new chat (new session, same visitor) ----
+  const startNewChat = () => {
+    setMessages([]);
+    setSessionId(null);
+    localStorage.removeItem('rag_session_id');
+    setShowHistoryPanel(false);
+  };
 
   const handleTextareaInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setChatInput(e.target.value);
@@ -340,7 +448,11 @@ export default function App() {
       const response = await fetch('/api/query', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: userMsgText })
+        body: JSON.stringify({
+          question: userMsgText,
+          session_id: sessionId,
+          visitor_id: visitorId
+        })
       });
 
       if (!response.ok) {
@@ -348,6 +460,11 @@ export default function App() {
       }
 
       const data = await response.json();
+      if (data.session_id && data.session_id !== sessionId) {
+        setSessionId(data.session_id);
+        localStorage.setItem('rag_session_id', data.session_id);
+        loadSessions();
+      }
       const cleanContent = data.answer.split(/\n\nCitations:\n/)[0];
 
       const citations: Citation[] = (data.sources || []).map((src: any, idx: number) => ({
@@ -366,6 +483,7 @@ export default function App() {
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       };
       setMessages(prev => [...prev, modelMessage]);
+      loadSessions();
     } catch (err: any) {
       console.error(err);
       const errorMessage: Message = {
@@ -455,6 +573,11 @@ export default function App() {
     s.content.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  const formatSessionDate = (iso: string) => {
+    const d = new Date(iso);
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' · ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
   return (
     <div className="h-screen w-full flex flex-col font-sans overflow-hidden transition-colors duration-300 bg-[#fafafa] text-[#18181b] dark:bg-neutral-950 dark:text-neutral-100">
 
@@ -469,6 +592,76 @@ export default function App() {
 
         {/* Global Toolbar */}
         <div className="flex items-center gap-3">
+
+          {/* New Chat */}
+          <button
+            onClick={startNewChat}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full cursor-pointer transition-colors hover:bg-[#f4f4f5] text-[#71717a] dark:hover:bg-neutral-800 dark:text-neutral-400 text-xs font-semibold"
+            title="Start a new chat"
+          >
+            <MessageSquarePlus className="w-4 h-4" />
+            <span className="hidden sm:inline">New chat</span>
+          </button>
+
+          {/* History dropdown toggle */}
+          <div className="relative">
+            <button
+              onClick={() => setShowHistoryPanel(prev => !prev)}
+              className={`p-2 rounded-full cursor-pointer transition-colors hover:bg-[#f4f4f5] dark:hover:bg-neutral-800 ${
+                showHistoryPanel ? 'bg-[#f4f4f5] text-[#18181b] dark:bg-neutral-800 dark:text-white' : 'text-[#71717a] dark:text-neutral-400'
+              }`}
+              title="Chat history"
+            >
+              <History className="w-5 h-5" />
+            </button>
+
+            {showHistoryPanel && (
+              <>
+                <div className="fixed inset-0 z-30" onClick={() => setShowHistoryPanel(false)} />
+                <div className="absolute right-0 top-11 w-80 max-h-[420px] overflow-y-auto rounded-xl border shadow-lg z-40 bg-white border-[#e4e4e7] dark:bg-neutral-900 dark:border-neutral-800">
+                  <div className="p-3 border-b border-[#e4e4e7] dark:border-neutral-800 flex items-center justify-between">
+                    <span className="text-xs font-bold uppercase tracking-wider text-neutral-500 dark:text-neutral-400">
+                      Past conversations
+                    </span>
+                    <button
+                      onClick={startNewChat}
+                      className="text-[10px] font-semibold px-2 py-1 rounded-md hover:bg-[#f4f4f5] dark:hover:bg-neutral-800 text-[#18181b] dark:text-neutral-100"
+                    >
+                      + New
+                    </button>
+                  </div>
+
+                  {sessions.length === 0 ? (
+                    <div className="p-6 text-center">
+                      <p className="text-xs text-neutral-500 dark:text-neutral-400">No past conversations yet.</p>
+                    </div>
+                  ) : (
+                    <div className="p-2 space-y-1">
+                      {sessions.map((s) => (
+                        <button
+                          key={s.id}
+                          onClick={() => resumeSession(s.id)}
+                          className={`w-full text-left p-2.5 rounded-lg transition-colors cursor-pointer ${
+                            s.id === sessionId
+                              ? 'bg-[#f4f4f5] dark:bg-neutral-800'
+                              : 'hover:bg-[#f4f4f5] dark:hover:bg-neutral-800'
+                          }`}
+                        >
+                          <p className="text-xs font-semibold truncate text-[#18181b] dark:text-neutral-100">
+                            {s.title || 'New conversation'}
+                          </p>
+                          <p className="text-[10px] mt-0.5 text-neutral-500 dark:text-neutral-500">
+                            {formatSessionDate(s.created_at)} · {s.message_count} messages
+                          </p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+
           <div className="relative flex items-center">
             {showSearchInput && (
               <input
@@ -758,7 +951,12 @@ export default function App() {
 
           <div className="flex-1 overflow-y-auto px-6 py-6" id="chat-scroller">
 
-            {messages.length === 0 ? (
+            {isHydrating ? (
+              <div className="h-full flex flex-col items-center justify-center text-center select-none py-16">
+                <div className="animate-spin rounded-full h-6 w-6 border-2 border-t-transparent border-[#18181b] dark:border-white mb-3"></div>
+                <p className="text-xs font-medium text-neutral-500 dark:text-neutral-400">Loading conversation...</p>
+              </div>
+            ) : messages.length === 0 ? (
               <div className="h-full flex flex-col items-center justify-center text-center select-none py-16">
                 <div className="w-24 h-24 mb-6 relative flex items-center justify-center">
                   <div className="absolute inset-0 rounded-full animate-pulse bg-neutral-200/50 dark:bg-neutral-800/50"></div>
