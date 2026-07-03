@@ -180,6 +180,15 @@ export default function App() {
     setShowHistoryPanel(false);
   };
 
+  const ensureSessionId = async (): Promise<string> => {
+  if (sessionId) return sessionId;
+  const res = await fetch('/api/session/new', { method: 'POST' });
+  const data = await res.json();
+  setSessionId(data.session_id);
+  localStorage.setItem('rag_session_id', data.session_id);
+  return data.session_id;
+  };
+
   const handleTextareaInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setChatInput(e.target.value);
     if (textareaRef.current) {
@@ -263,14 +272,16 @@ export default function App() {
         };
         reader.readAsText(file);
       } else {
+        const activeSessionId = await ensureSessionId();
+
         const formData = new FormData();
         formData.append('file', file);
+        formData.append('session_id', activeSessionId);
 
         const response = await fetch('/api/upload/pdf', {
           method: 'POST',
-          body: formData
+          body: formData,
         });
-
         const data = await response.json();
         if (response.ok) {
           setSources(prev =>

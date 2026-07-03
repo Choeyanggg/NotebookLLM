@@ -8,5 +8,5 @@ langchain-groq
 python-dotenv
 langchain-core
 sentence-transformers
-chromadb
+chromadb>=1.0.0
 supabase
