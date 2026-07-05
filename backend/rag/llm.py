@@ -69,7 +69,7 @@ class AdvancedRagPipeline:
             'source': doc['metadata'].get('source_file', 'unknown'),
             'page': doc['metadata'].get('page', 'unknown'),
             'score': doc['similarity_score'],
-            'preview': doc['content'][:120] + '...'
+            'preview': doc['content']
         } for doc in result]
 
         system_prompt = """You are a document assistant. You answer ONLY using the numbered context chunks provided below — never your own general knowledge, even if you're confident about the answer.

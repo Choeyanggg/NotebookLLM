@@ -33,32 +33,56 @@ app.add_middleware(
 async def upload_pdf(file: UploadFile = File(...), session_id: str = Form(...)):
     saved_path = await save_upload(file)
     documents = process_pdf(saved_path)
+
     chunks = text_splitter.split_documents(documents)
+
+    preview = [
+        {
+            "chunk": i + 1,
+            "page": (
+                chunk.metadata.get("page", "Unknown") + 1
+                if isinstance(chunk.metadata.get("page"), int)
+                else "Unknown"
+            ),
+            "content": chunk.page_content,
+        }
+        for i, chunk in enumerate(chunks)
+    ]
+
     texts = [chunk.page_content for chunk in chunks]
     embeddings = embedding_manager.generate_embeddings(texts)
+
     vector_store.add_documents(chunks, embeddings, session_id=session_id)
 
     return {
         "filename": file.filename,
         "pages_loaded": len(documents),
         "chunks_created": len(chunks),
-        "embedding_shape": list(embeddings.shape)
+        "embedding_shape": list(embeddings.shape),
+        "preview": preview,
     }
 
 class QueryRequest(BaseModel):
     question: str
     session_id: str | None = None
+    visitor_id: str | None = None
 
 @app.post("/session/new")
-async def new_session():
-    resp = supabase.table("sessions").insert({}).execute()
+async def new_session(visitor_id: str | None = None):
+    resp = supabase.table("sessions").insert({
+        "visitor_id": visitor_id,
+        "title": "New conversation"
+    }).execute()
     return {"session_id": resp.data[0]["id"]}
 
 @app.post("/query")
 async def ask(request: QueryRequest):
     session_id = request.session_id
     if not session_id:
-        resp = supabase.table("sessions").insert({}).execute()
+        resp = supabase.table("sessions").insert({
+            "visitor_id": request.visitor_id,
+            "title": request.question[:60]
+        }).execute()
         session_id = resp.data[0]["id"]
 
     answer = adv_rag.query(
@@ -80,3 +104,29 @@ async def get_session_messages(session_id: str):
         .execute()
     )
     return resp.data
+
+@app.get("/sessions")
+async def list_sessions(visitor_id: str):
+    sessions_resp=(
+        supabase.table("sessions")
+        .select("id,title,created_at")
+        .eq("visitor_id",visitor_id)
+        .order("created_at",desc=True)
+        .execute()
+    )
+    sessions=sessions_resp.data or []
+    result=[]
+    for s in sessions:
+        count_resp=(
+            supabase.table("messages")
+            .select("id")
+            .eq("session_id",s["id"])
+            .execute()
+        )
+        result.append({
+            "id":s["id"],
+            "title":s.get("title"),
+            "created_at": s["created_at"],
+            "message_count":len(count_resp.data or [])
+        })
+    return result

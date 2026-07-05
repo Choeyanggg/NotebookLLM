@@ -1,7 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
-  Search,
-  Settings,
   UploadCloud,
   Plus,
   Trash2,
@@ -31,6 +29,22 @@ function getOrCreateVisitorId(): string {
     localStorage.setItem('rag_visitor_id', id);
   }
   return id;
+}
+
+// Cleans up raw PDF-extracted text for readable display only.
+// Does NOT touch what's actually stored/embedded — purely cosmetic.
+function formatExtractedText(raw: string): string {
+  return raw
+    // rejoin words split across a line-wrap hyphen: "ma-\nchine" -> "machine"
+    .replace(/(\w)-\n(\w)/g, '$1$2')
+    // collapse single newlines (mid-sentence wraps) into spaces,
+    // but keep intentional paragraph breaks (double newlines)
+    .replace(/([^\n])\n(?!\n)([^\n])/g, '$1 $2')
+    // collapse 3+ blank lines down to a normal paragraph gap
+    .replace(/\n{3,}/g, '\n\n')
+    // tidy leftover double spaces from the join above
+    .replace(/ {2,}/g, ' ')
+    .trim();
 }
 
 interface SessionSummary {
@@ -73,9 +87,6 @@ export default function App() {
 
   // Modals & Panels
   const [selectedSourceForView, setSelectedSourceForView] = useState<Source | null>(null);
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [showSearchInput, setShowSearchInput] = useState(false);
   const [feedbackStatus, setFeedbackStatus] = useState<{ [key: string]: 'like' | 'dislike' | null }>({});
 
   // Loading/Processing states
@@ -105,7 +116,7 @@ export default function App() {
       const res = await fetch(`/api/sessions?visitor_id=${visitorId}`);
       if (!res.ok) return;
       const data = await res.json();
-      setSessions(data);
+      setSessions(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error('Failed to load sessions', err);
     }
@@ -284,13 +295,33 @@ export default function App() {
         });
         const data = await response.json();
         if (response.ok) {
+          const allChunks = data.preview || [];
+          const MAX_CHUNKS_SHOWN = 20;
+          const MAX_CHARS_PER_CHUNK = 250;
+
+          const chunkPreview = allChunks
+            .slice(0, MAX_CHUNKS_SHOWN)
+            .map((c: any) => {
+              const cleaned = formatExtractedText(c.content);
+              const truncated = cleaned.length > MAX_CHARS_PER_CHUNK
+                ? cleaned.slice(0, MAX_CHARS_PER_CHUNK) + '...'
+                : cleaned;
+              return `--- Chunk ${c.chunk} (page ${c.page}) ---\n${truncated}`;
+            })
+            .join('\n\n');
+
+          const remaining = allChunks.length - MAX_CHUNKS_SHOWN;
+          const remainingNote = remaining > 0
+            ? `\n\n... and ${remaining} more chunk${remaining === 1 ? '' : 's'} indexed (not shown here).`
+            : '';
+
           setSources(prev =>
             prev.map(src =>
               src.id === newSourceId
                 ? {
                     ...src,
                     status: 'ready',
-                    content: `Indexed successfully.\n\nPages loaded: ${data.pages_loaded}\nChunks created: ${data.chunks_created}\n\nThis document has been embedded into the vector store and is now searchable in chat.`
+                    content: `Indexed successfully. Pages loaded: ${data.pages_loaded} | Chunks created: ${data.chunks_created}\n\n${chunkPreview}${remainingNote}`
                   }
                 : src
             )
@@ -513,15 +544,15 @@ export default function App() {
     const citation = citations.find(c => c.citationNumber === citationNum);
     if (!citation) return;
 
-    const matchedSource = sources.find(
-      s => s.title.toLowerCase() === citation.sourceTitle.toLowerCase()
-    );
-
-    if (matchedSource) {
-      setSelectedSourceForView(matchedSource);
-    } else {
-      alert(`Source "${citation.sourceTitle}" is no longer in your workspace.`);
-    }
+    setSelectedSourceForView({
+      id: `citation-${citation.citationNumber}-${Date.now()}`,
+      title: `${citation.sourceTitle} — ${citation.location}`,
+      type: 'file',
+      fileType: (citation.sourceType as 'pdf' | 'txt' | 'docx') || 'pdf',
+      status: 'ready',
+      content: formatExtractedText(citation.snippet),
+      selected: true
+    });
   };
 
   const copyToClipboard = (text: string) => {
@@ -579,10 +610,7 @@ export default function App() {
     });
   };
 
-  const filteredSources = sources.filter(s =>
-    s.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    s.content.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const filteredSources = sources;
 
   const formatSessionDate = (iso: string) => {
     const d = new Date(iso);
@@ -672,33 +700,6 @@ export default function App() {
               </>
             )}
           </div>
-
-          <div className="relative flex items-center">
-            {showSearchInput && (
-              <input
-                type="text"
-                placeholder="Search sources..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="border rounded-full py-1 px-4 text-xs focus:ring-1 focus:outline-none w-48 mr-2 transition-all bg-[#f4f4f5] border-[#d4d4d8] focus:ring-[#18181b] text-[#18181b] dark:bg-neutral-800 dark:border-neutral-700 dark:focus:ring-neutral-400 dark:text-neutral-100"
-              />
-            )}
-            <button
-              onClick={() => setShowSearchInput(!showSearchInput)}
-              className="p-2 rounded-full cursor-pointer transition-colors hover:bg-[#f4f4f5] text-[#71717a] dark:hover:bg-neutral-800 dark:text-neutral-400"
-              title="Search notes"
-            >
-              <Search className="w-5 h-5" />
-            </button>
-          </div>
-
-          <button
-            onClick={() => setIsSettingsOpen(true)}
-            className="p-2 rounded-full cursor-pointer transition-colors hover:bg-[#f4f4f5] text-[#71717a] dark:hover:bg-neutral-800 dark:text-neutral-400"
-            title="Settings"
-          >
-            <Settings className="w-5 h-5" />
-          </button>
 
           {/* Real light/dark toggle */}
           <button
@@ -850,15 +851,6 @@ export default function App() {
                 </div>
               )}
             </div>
-
-            {searchQuery && (
-              <div className="rounded-lg p-2 flex justify-between items-center text-[11px] font-medium mt-2 bg-neutral-200 text-[#18181b] dark:bg-neutral-800 dark:text-neutral-100">
-                <span>Showing results for: "{searchQuery}"</span>
-                <button onClick={() => setSearchQuery('')} className="text-[#18181b] dark:text-neutral-100">
-                  <X className="w-3.5 h-3.5 hover:scale-110" />
-                </button>
-              </div>
-            )}
           </div>
 
           {/* Sources List */}
@@ -1218,46 +1210,6 @@ export default function App() {
               </button>
             </div>
 
-          </div>
-        </div>
-      )}
-
-      {/* Settings Modal */}
-      {isSettingsOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-xs transition-opacity">
-          <div className="rounded-2xl max-w-md w-full p-6 shadow-2xl border transition-colors duration-300 bg-white dark:bg-neutral-900 border-[#e4e4e7] dark:border-neutral-800">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="font-bold text-lg text-[#18181b] dark:text-neutral-100">Workspace Settings</h3>
-              <button onClick={() => setIsSettingsOpen(false)} className="p-1.5 hover:bg-gray-100 dark:hover:bg-neutral-800 rounded-full text-gray-500 dark:text-neutral-400 cursor-pointer">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              <div>
-                <p className="text-xs font-bold mb-1.5 uppercase tracking-wide text-neutral-600 dark:text-neutral-400">Backend Status</p>
-                <div className="border p-3 rounded-xl text-xs space-y-2 bg-neutral-50 border-neutral-200 text-neutral-700 dark:bg-neutral-800 dark:border-neutral-700 dark:text-neutral-300">
-                  <div className="flex justify-between items-center">
-                    <span>RAG Backend (FastAPI)</span>
-                    <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-neutral-200 text-neutral-800 dark:bg-neutral-700 dark:text-neutral-100">
-                      Connected via /api proxy
-                    </span>
-                  </div>
-                  <p className="text-[10px] leading-normal text-neutral-500 dark:text-neutral-400">
-                    LLM inference runs server-side via Groq (Llama 3.1). API keys are kept on the backend and never exposed to this frontend.
-                  </p>
-                </div>
-              </div>
-
-              <div className="pt-2">
-                <button
-                  onClick={() => setIsSettingsOpen(false)}
-                  className="w-full py-2.5 text-white rounded-lg font-semibold text-xs active:scale-95 transition-all shadow-sm bg-[#18181b] hover:bg-[#27272a] dark:bg-white dark:text-neutral-900 dark:hover:bg-neutral-200"
-                >
-                  Save Settings
-                </button>
-              </div>
-            </div>
           </div>
         </div>
       )}
