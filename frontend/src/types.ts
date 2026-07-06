@@ -10,7 +10,7 @@ export interface Source {
   id: string;
   title: string;
   type: 'file' | 'url' | 'topic';
-  fileType?: 'pdf' | 'txt' | 'docx';
+  fileType?: 'pdf' | 'txt' | 'docx' | 'csv';
   status: 'ready' | 'processing' | 'error';
   content: string;
   selected: boolean;

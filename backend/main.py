@@ -1,5 +1,5 @@
-from fastapi import FastAPI, UploadFile, File, Form
-from rag.loader import save_upload, process_pdf
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from rag.loader import save_upload, process_documents, process_url, process_topic
 from rag.embedding import text_splitter, EmbeddingManager
 from rag.vectorstore import VectorStore
 from rag.retriever import RAGRetriever
@@ -29,10 +29,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.post("/upload/pdf")
-async def upload_pdf(file: UploadFile = File(...), session_id: str = Form(...)):
+@app.post("/upload/document")
+async def upload_document(file: UploadFile = File(...), session_id: str = Form(...)):
     saved_path = await save_upload(file)
-    documents = process_pdf(saved_path)
+
+    try:
+        documents = process_documents(saved_path)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Failed to process {file.filename}: {e}")
+
+    if not documents:
+        raise HTTPException(status_code=422, detail=f"No content could be extracted from {file.filename}")
 
     chunks = text_splitter.split_documents(documents)
 
@@ -56,10 +65,60 @@ async def upload_pdf(file: UploadFile = File(...), session_id: str = Form(...)):
 
     return {
         "filename": file.filename,
+        "file_type": documents[0].metadata.get("file_type", "unknown"),
         "pages_loaded": len(documents),
         "chunks_created": len(chunks),
         "embedding_shape": list(embeddings.shape),
         "preview": preview,
+    }
+
+
+class SourceProcessRequest(BaseModel):
+    title: str
+    type: str  # 'url' | 'topic'
+    session_id: str | None = None
+
+
+@app.post("/sources/process")
+async def process_source(request: SourceProcessRequest):
+    session_id = request.session_id
+    if not session_id:
+        resp = supabase.table("sessions").insert({
+            "visitor_id": None,
+            "title": request.title[:60]
+        }).execute()
+        session_id = resp.data[0]["id"]
+
+    try:
+        if request.type == "url":
+            documents = process_url(request.title)
+        elif request.type == "topic":
+            documents = process_topic(request.title)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported source type: {request.type}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Failed to process source: {e}")
+
+    if not documents:
+        raise HTTPException(status_code=422, detail="No content could be extracted from this source")
+
+    chunks = text_splitter.split_documents(documents)
+    texts = [chunk.page_content for chunk in chunks]
+    embeddings = embedding_manager.generate_embeddings(texts)
+
+    vector_store.add_documents(chunks, embeddings, session_id=session_id)
+
+    content = "\n\n".join(doc.page_content for doc in documents)
+
+    return {
+        "title": request.title,
+        "type": request.type,
+        "session_id": session_id,
+        "documents_loaded": len(documents),
+        "chunks_created": len(chunks),
+        "content": content,
     }
 
 class QueryRequest(BaseModel):

@@ -242,13 +242,13 @@ export default function App() {
     }
   };
 
+  const SUPPORTED_FILE_TYPES = ['pdf', 'txt', 'docx', 'csv'] as const;
+
   const processUploadedFile = async (file: File) => {
     const fileExtension = file.name.split('.').pop()?.toLowerCase();
-    const isTxt = fileExtension === 'txt';
-    const isPdf = fileExtension === 'pdf';
 
-    if (!isTxt && !isPdf) {
-      alert("Only PDF and TXT are supported right now. DOCX support is coming soon.");
+    if (!fileExtension || !SUPPORTED_FILE_TYPES.includes(fileExtension as any)) {
+      alert("Only PDF, TXT, DOCX and CSV are supported right now.");
       return;
     }
 
@@ -257,7 +257,7 @@ export default function App() {
       id: newSourceId,
       title: file.name,
       type: 'file',
-      fileType: fileExtension as 'pdf' | 'txt',
+      fileType: fileExtension as 'pdf' | 'txt' | 'docx' | 'csv',
       status: 'processing',
       selected: true,
       content: ''
@@ -268,69 +268,53 @@ export default function App() {
     setProcessingMsg(`Uploading and parsing ${file.name}...`);
 
     try {
-      if (isTxt) {
-        const reader = new FileReader();
-        reader.onload = async (event) => {
-          const text = event.target?.result as string;
-          setSources(prev =>
-            prev.map(src =>
-              src.id === newSourceId
-                ? { ...src, status: 'ready', content: text || 'Empty document.' }
-                : src
-            )
-          );
-          setIsProcessing(false);
-        };
-        reader.readAsText(file);
+      const activeSessionId = await ensureSessionId();
+
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('session_id', activeSessionId);
+
+      const response = await fetch('/api/upload/document', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await response.json();
+      if (response.ok) {
+        const allChunks = data.preview || [];
+        const MAX_CHUNKS_SHOWN = 20;
+        const MAX_CHARS_PER_CHUNK = 250;
+
+        const chunkPreview = allChunks
+          .slice(0, MAX_CHUNKS_SHOWN)
+          .map((c: any) => {
+            const cleaned = formatExtractedText(c.content);
+            const truncated = cleaned.length > MAX_CHARS_PER_CHUNK
+              ? cleaned.slice(0, MAX_CHARS_PER_CHUNK) + '...'
+              : cleaned;
+            return `--- Chunk ${c.chunk} (page ${c.page}) ---\n${truncated}`;
+          })
+          .join('\n\n');
+
+        const remaining = allChunks.length - MAX_CHUNKS_SHOWN;
+        const remainingNote = remaining > 0
+          ? `\n\n... and ${remaining} more chunk${remaining === 1 ? '' : 's'} indexed (not shown here).`
+          : '';
+
+        setSources(prev =>
+          prev.map(src =>
+            src.id === newSourceId
+              ? {
+                  ...src,
+                  status: 'ready',
+                  content: `Indexed successfully. Segments loaded: ${data.pages_loaded} | Chunks created: ${data.chunks_created}\n\n${chunkPreview}${remainingNote}`
+                }
+              : src
+          )
+        );
       } else {
-        const activeSessionId = await ensureSessionId();
-
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('session_id', activeSessionId);
-
-        const response = await fetch('/api/upload/pdf', {
-          method: 'POST',
-          body: formData,
-        });
-        const data = await response.json();
-        if (response.ok) {
-          const allChunks = data.preview || [];
-          const MAX_CHUNKS_SHOWN = 20;
-          const MAX_CHARS_PER_CHUNK = 250;
-
-          const chunkPreview = allChunks
-            .slice(0, MAX_CHUNKS_SHOWN)
-            .map((c: any) => {
-              const cleaned = formatExtractedText(c.content);
-              const truncated = cleaned.length > MAX_CHARS_PER_CHUNK
-                ? cleaned.slice(0, MAX_CHARS_PER_CHUNK) + '...'
-                : cleaned;
-              return `--- Chunk ${c.chunk} (page ${c.page}) ---\n${truncated}`;
-            })
-            .join('\n\n');
-
-          const remaining = allChunks.length - MAX_CHUNKS_SHOWN;
-          const remainingNote = remaining > 0
-            ? `\n\n... and ${remaining} more chunk${remaining === 1 ? '' : 's'} indexed (not shown here).`
-            : '';
-
-          setSources(prev =>
-            prev.map(src =>
-              src.id === newSourceId
-                ? {
-                    ...src,
-                    status: 'ready',
-                    content: `Indexed successfully. Pages loaded: ${data.pages_loaded} | Chunks created: ${data.chunks_created}\n\n${chunkPreview}${remainingNote}`
-                  }
-                : src
-            )
-          );
-        } else {
-          throw new Error(data.detail || data.error || "Failed to process document");
-        }
-        setIsProcessing(false);
+        throw new Error(data.detail || data.error || "Failed to process document");
       }
+      setIsProcessing(false);
     } catch (err: any) {
       console.error(err);
       setSources(prev =>
@@ -369,10 +353,12 @@ export default function App() {
     setProcessingMsg(`Analyzing page content for ${cleanTitle}...`);
 
     try {
+      const activeSessionId = await ensureSessionId();
+
       const response = await fetch('/api/sources/process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, type: 'url' })
+        body: JSON.stringify({ title, type: 'url', session_id: activeSessionId })
       });
 
       const data = await response.json();
@@ -383,7 +369,7 @@ export default function App() {
           )
         );
       } else {
-        throw new Error(data.error);
+        throw new Error(data.detail || data.error);
       }
     } catch (err: any) {
       console.error(err);
@@ -419,10 +405,12 @@ export default function App() {
     setProcessingMsg(`Synthesizing structured notes on "${topicName}"...`);
 
     try {
+      const activeSessionId = await ensureSessionId();
+
       const response = await fetch('/api/sources/process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: topicName, type: 'topic' })
+        body: JSON.stringify({ title: topicName, type: 'topic', session_id: activeSessionId })
       });
 
       const data = await response.json();
@@ -433,7 +421,7 @@ export default function App() {
           )
         );
       } else {
-        throw new Error(data.error);
+        throw new Error(data.detail || data.error);
       }
     } catch (err: any) {
       console.error(err);
@@ -548,7 +536,7 @@ export default function App() {
       id: `citation-${citation.citationNumber}-${Date.now()}`,
       title: `${citation.sourceTitle} — ${citation.location}`,
       type: 'file',
-      fileType: (citation.sourceType as 'pdf' | 'txt' | 'docx') || 'pdf',
+      fileType: (citation.sourceType as 'pdf' | 'txt' | 'docx' | 'csv') || 'pdf',
       status: 'ready',
       content: formatExtractedText(citation.snippet),
       selected: true
@@ -799,14 +787,14 @@ export default function App() {
                     Drag files here or <span className="underline text-[#18181b] dark:text-white">browse</span>
                   </p>
                   <p className="text-[9px] uppercase tracking-wider font-semibold text-[#71717a] dark:text-neutral-500">
-                    PDF, TXT UP TO 50MB
+                    PDF, TXT, DOCX, CSV UP TO 50MB
                   </p>
                   <input
                     type="file"
                     ref={fileInputRef}
                     onChange={handleFileChange}
                     className="hidden"
-                    accept=".txt,.pdf"
+                    accept=".txt,.pdf,.docx,.csv"
                   />
                 </div>
               )}

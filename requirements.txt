@@ -10,3 +10,6 @@ langchain-core
 sentence-transformers
 chromadb>=1.0.0
 supabase
+docx2txt
+beautifulsoup4
+tavily-python
