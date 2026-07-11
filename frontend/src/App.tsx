@@ -22,6 +22,11 @@ import {
 } from 'lucide-react';
 import { Source, Message, Citation } from './types';
 
+// Backend base URL. Set VITE_API_URL in your .env (or hosting provider's env vars)
+// to point at your deployed FastAPI backend, e.g. https://api.yourdomain.com
+// Falls back to the local FastAPI dev server when unset.
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
 function getOrCreateVisitorId(): string {
   let id = localStorage.getItem('rag_visitor_id');
   if (!id) {
@@ -113,7 +118,7 @@ export default function App() {
   // ---- Session history: load list for sidebar/dropdown ----
   const loadSessions = async () => {
     try {
-      const res = await fetch(`/api/sessions?visitor_id=${visitorId}`);
+      const res = await fetch(`${API_URL}/sessions?visitor_id=${visitorId}`);
       if (!res.ok) return;
       const data = await res.json();
       setSessions(Array.isArray(data) ? data : []);
@@ -134,7 +139,7 @@ export default function App() {
     const hydrate = async () => {
       setIsHydrating(true);
       try {
-        const res = await fetch(`/api/sessions/${sessionId}/messages`);
+        const res = await fetch(`${API_URL}/sessions/${sessionId}/messages`);
         if (!res.ok) return;
         const data = await res.json();
 
@@ -161,7 +166,7 @@ export default function App() {
   const resumeSession = async (id: string) => {
     setIsHydrating(true);
     try {
-      const res = await fetch(`/api/sessions/${id}/messages`);
+      const res = await fetch(`${API_URL}/sessions/${id}/messages`);
       if (!res.ok) return;
       const data = await res.json();
 
@@ -193,7 +198,7 @@ export default function App() {
 
   const ensureSessionId = async (): Promise<string> => {
   if (sessionId) return sessionId;
-  const res = await fetch('/api/session/new', { method: 'POST' });
+  const res = await fetch(`${API_URL}/session/new`, { method: 'POST' });
   const data = await res.json();
   setSessionId(data.session_id);
   localStorage.setItem('rag_session_id', data.session_id);
@@ -274,7 +279,7 @@ export default function App() {
       formData.append('file', file);
       formData.append('session_id', activeSessionId);
 
-      const response = await fetch('/api/upload/document', {
+      const response = await fetch(`${API_URL}/upload/document`, {
         method: 'POST',
         body: formData,
       });
@@ -355,7 +360,7 @@ export default function App() {
     try {
       const activeSessionId = await ensureSessionId();
 
-      const response = await fetch('/api/sources/process', {
+      const response = await fetch(`${API_URL}/sources/process`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title, type: 'url', session_id: activeSessionId })
@@ -407,7 +412,7 @@ export default function App() {
     try {
       const activeSessionId = await ensureSessionId();
 
-      const response = await fetch('/api/sources/process', {
+      const response = await fetch(`${API_URL}/sources/process`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: topicName, type: 'topic', session_id: activeSessionId })
@@ -475,7 +480,7 @@ export default function App() {
     setIsGeneratingChat(true);
 
     try {
-      const response = await fetch('/api/query', {
+      const response = await fetch(`${API_URL}/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

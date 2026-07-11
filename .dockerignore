@@ -1,0 +1,13 @@
+vector_store/
+node_modules/
+.env
+uploads/
+__pycache__/
+*.pyc
+.venv/
+venv/
+dist/
+frontend/
+.git/
+*.md
+Dockerfile
